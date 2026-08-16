@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>BOMBERMAN - C64 Edition</title>
+<style>
+html { overflow-x: hidden; max-width: 100vw; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a1a2e;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-family: 'Courier New', monospace;
+  color: #7878f4;
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+#header {
+  text-align: center;
+  margin-bottom: 10px;
+}
+#header h1 {
+  color: #78f478;
+  font-size: 28px;
+  text-shadow: 2px 2px #000;
+  letter-spacing: 4px;
+}
+/* flex-wrap lets the six stat items flow to a second row
+   so they aren't clipped on narrow viewports (e.g. 375px iPhone SE) */
+#hud {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 20px;
+  font-size: 14px;
+  margin-bottom: 8px;
+  max-width: 100%;
+}
+#hud span { color: #f47878; }
+canvas {
+  border: 3px solid #7878f4;
+  image-rendering: pixelated;
+  max-width: 100vw;
+  height: auto;
+}
+#message {
+  margin-top: 10px;
+  font-size: 16px;
+  height: 24px;
+  color: #f4f478;
+}
+#controls {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #5858a8;
+}
+/* === MOBILE TOUCH CONTROLS === */
+#mobile-controls {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 160px;
+  pointer-events: none;
+  z-index: 100;
+}
+.touch-btn {
+  display: none;
+  position: absolute;
+  width: 56px;
+  height: 56px;
+  background: rgba(120, 120, 244, 0.25);
+  border: 2px solid rgba(120, 120, 244, 0.5);
+  border-radius: 12px;
+  color: #7878f4;
+  font-size: 24px;
+  font-family: 'Courier New', monospace;
+  font-weight: bold;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+.touch-btn:active, .touch-btn.active {
+  background: rgba(120, 120, 244, 0.5);
+  border-color: rgba(120, 244, 120, 0.7);
+}
+#dpad-up    { left: 76px; bottom: 90px; }
+#dpad-down  { left: 76px; bottom: 20px; }
+#dpad-left  { left: 20px; bottom: 55px; }
+#dpad-right { left: 132px; bottom: 55px; }
+#bomb-btn   { right: 20px; bottom: 50px; width: 72px; height: 72px; border-radius: 50%; font-size: 14px; }
+#start-btn  { right: 20px; bottom: 20px; width: 80px; height: 36px; font-size: 12px; }
+@media (pointer: coarse), (max-width: 480px) {
+  #mobile-controls { display: block; }
+  .touch-btn { display: flex; }
+}
+</style>
+</head>
+<body>
+<div id="header"><h1>BOMBERMAN</h1></div>
+<div id="hud">
+  <span>LIVES: <b id="lives">3</b></span>
+  <span>SCORE: <b id="score">0</b></span>
+  <span>ROUND: <b id="round">1</b></span>
+  <span>SPEED: <b id="speed-lvl">1</b></span>
+  <span>BOMBS: <b id="bomb-lvl">1</b></span>
+  <span>RANGE: <b id="range-lvl">1</b></span>
+</div>
+<canvas id="game"></canvas>
+<div id="message">Press ENTER to start</div>
+<div id="controls">ARROWS: Move | SPACE: Place Bomb | ENTER: Restart</div>
+<div id="mobile-controls">
+  <div class="touch-btn" id="dpad-up">▲</div>
+  <div class="touch-btn" id="dpad-down">▼</div>
+  <div class="touch-btn" id="dpad-left">◀</div>
+  <div class="touch-btn" id="dpad-right">▶</div>
+  <div class="touch-btn" id="bomb-btn">BOMB</div>
+  <div class="touch-btn" id="start-btn">START</div>
+</div>
+
+<script>
+// === C64 PALETTE ===
+const C = {
+  black: '#000000', white: '#ffffff', red: '#883932', cyan: '#6cb4f0',
+  purple: '#a85ca8', green: '#329c32', blue: '#4f4fb0', yellow: '#bcb16c',
+  orange: '#8c732a', brown: '#504040', pink: '#dca8b4', grey1: '#7c7c7c',
+  grey2: '#a8a8a8', green2: '#6cb46c', blue2: '#7c7cd0', grey3: '#bcbcbc'
+};
+
+// === CONSTANTS ===
+const COLS = 15, ROWS = 13;
+const TILE = 40;
+const canvas = document.getElementById('game');
+canvas.width = COLS * TILE;
+canvas.height = ROWS * TILE;
+const ctx = canvas.getContext('2d');
+
+// === GAME STATE ===
+let state = 'title'; // title, playing, gameover, win
+let lives = 3, score = 0, round = 1;
+let player = null, bombs = [], explosions = [], enemies = [], powerups = [];
+let map = [], keys = {};
+let animFrame = 0;
+
+// === MAP GENERATION ===
+function generateMap() {
+  const m = [];
+  for (let r = 0; r < ROWS; r++) {
+    m[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      if (r === 0 || r === ROWS-1 || c === 0 || c === COLS-1) {
+        m[r][c] = 2; // hard wall border
+      } else if (r % 2 === 0 && c % 2 === 0) {
+        m[r][c] = 2; // hard wall grid
+      } else if (r === 1 && c === 1) {
+        m[r][c] = 0; // player start clear
+      } else if (r === 1 && c === 2) {
+        m[r][c] = 0;
+      } else if (r === 2 && c === 1) {
+        m[r][c] = 0;
+      } else if (r === ROWS-2 && c === COLS-2) {
+        m[r][c] = 0; // enemy spawn clear
+      } else if (r === ROWS-2 && c === COLS-3) {
+        m[r][c] = 0;
+      } else if (r === ROWS-3 && c === COLS-2) {
+        m[r][c] = 0;
+      } else if (r % 2 === 1) {
+        m[r][c] = Math.random() < 0.65 ? 1 : 0; // soft wall
+      } else {
+        m[r][c] = Math.random() < 0.3 ? 1 : 0;
+      }
+    }
+  }
+  return m;
+}
+
+// === POWER-UP SYSTEM ===
+const PU_TYPES = ['speed', 'bomb', 'range', 'life'];
+
+function spawnPowerups() {
+  powerups = [];
+  const count = Math.min(3 + round, 6);
+  let placed = 0;
+  while (placed < count) {
+    const r = Math.floor(Math.random() * (ROWS - 2)) + 1;
+    const c = Math.floor(Math.random() * (COLS - 2)) + 1;
+    if (map[r][c] === 0 && !(r <= 2 && c <= 2)) {
+      powerups.push({ r, c, type: PU_TYPES[Math.floor(Math.random() * PU_TYPES.length)] });
+      placed++;
+    }
+  }
+}
+
+// === PLAYER ===
+function initPlayer() {
+  player = { x: 1, y: 1, px: 1 * TILE, py: 1 * TILE, dir: 'down', travelDir: 'down', speed: 2 + (getSpeedLevel() - 1), alive: true, invincible: 0 };
+}
+
+function getSpeedLevel() { return parseInt(document.getElementById('speed-lvl').textContent); }
+function getBombLevel() { return parseInt(document.getElementById('bomb-lvl').textContent); }
+function getRangeLevel() { return parseInt(document.getElementById('range-lvl').textContent); }
+
+// === ENEMIES ===
+function spawnEnemies() {
+  enemies = [];
+  const count = Math.min(2 + round, 8);
+  let placed = 0;
+  while (placed < count) {
+    const r = ROWS - 2 - Math.floor(Math.random() * 3);
+    const c = COLS - 2 - Math.floor(Math.random() * 3);
+    if (map[r][c] === 0 && !(r <= 2 && c <= 2)) {
+      enemies.push({ x: c, y: r, px: c * TILE, py: r * TILE, dir: ['up','down','left','right'][Math.floor(Math.random()*4)], speed: 1 + Math.random(), alive: true, timer: 0 });
+      placed++;
+    }
+  }
+}
+
+// === BOMBS ===
+function placeBomb() {
+  if (!player.alive) return;
+  const maxBombs = getBombLevel();
+  if (bombs.filter(b => !b.exploded).length >= maxBombs) return;
+  const c = Math.floor(player.x), r = Math.floor(player.y);
+  if (map[r][c] !== 0) return;
+  if (bombs.some(b => b.c === c && b.r === r)) return;
+  bombs.push({ c, r, range: getRangeLevel(), timer: 120, exploded: false });
+}
+
+function explodeBomb(bomb) {
+  bomb.exploded = true;
+  const range = bomb.range;
+  const dirs = [[0,-1],[0,1],[-1,0],[1,0]];
+  const parts = [{r: bomb.r, c: bomb.c}];
+
+  for (const [dr, dc] of dirs) {
+    for (let i = 1; i <= range; i++) {
+      const nr = bomb.r + dr * i, nc = bomb.c + dc * i;
+      if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) break;
+      if (map[nr][nc] === 2) break;
+      parts.push({r: nr, c: nc});
+      if (map[nr][nc] === 1) break; // stop at hard wall, destroy soft
+    }
+  }
+
+  for (const p of parts) {
+    explosions.push({ r: p.r, c: p.c, timer: 30 });
+    if (map[p.r][p.c] === 1) {
+      map[p.r][p.c] = 0;
+      score += 10;
+    }
+  }
+
+  // Check powerup destruction
+  powerups = powerups.filter(pu => !(pu.r === bomb.r && pu.c === bomb.c));
+}
+
+// === COLLISION ===
+function isWalkable(x, y) {
+  const c = Math.round(x), r = Math.round(y);
+  if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return false;
+  if (map[r][c] !== 0) return false;
+  // bomb collision: can walk into unexploded bombs you placed
+  for (const b of bombs) {
+    if (!b.exploded && b.c === c && b.r === r && (Math.round(player.x) !== c || Math.round(player.y) !== r)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function tileAt(px, py) {
+  const margin = 6;
+  const checks = [
+    {x: px + margin, y: py + margin},
+    {x: px + TILE - margin, y: py + margin},
+    {x: px + margin, y: py + TILE - margin},
+    {x: px + TILE - margin, y: py + TILE - margin}
+  ];
+  for (const p of checks) {
+    const c = Math.floor(p.x / TILE), r = Math.floor(p.y / TILE);
+    if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return false;
+    if (map[r][c] !== 0) return false;
+  }
+  return true;
+}
+
+// === INPUT ===
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Enter') {
+    if (state === 'title' || state === 'gameover') startGame();
+  }
+  if (e.code === 'Space' && state === 'playing') { e.preventDefault(); placeBomb(); }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// === GAMEPAD (Bluetooth controller) ===
+// NOTE: iOS Safari only exposes the Gamepad API on a SECURE CONTEXT — the page
+// must be served over https:// (or localhost). Over plain http:// no controller
+// will ever appear, however it is paired. Verified on-device 2026-08-12.
+//
+// Measured on an IINE mini retro pad paired in its XInput mode, which reports as
+// "Xbox Wireless Controller Extended Gamepad" with mapping:"standard":
+//   d-pad 12/13/14/15 = up/down/left/right
+//   face buttons 0 and 1 — the physical bottom-right button is 1 on a Nintendo-
+//     style layout and 0 on an Xbox one, so BOTH are bound to bomb.
+//   start: 5 (right shoulder). The Home/Start button is NOT usable — iOS grabs
+//     it at OS level to launch Apple Arcade, so it never reaches the page.
+//     9 and 8 are also bound for pads where Start is reachable.
+const PAD = {
+  up: [12], down: [13], left: [14], right: [15],
+  bomb: [0, 1],
+  start: [5, 9, 8]
+};
+const AXIS_DEAD = 0.5;
+let padPrevBomb = false, padPrevStart = false, padWasConnected = false;
+
+function padPressed(gp, list) {
+  return list.some(i => gp.buttons[i] && gp.buttons[i].pressed);
+}
+
+function pollGamepad() {
+  if (typeof navigator.getGamepads !== 'function') return;
+  const gp = Array.from(navigator.getGamepads() || []).find(p => p);
+
+  if (!gp) {
+    if (padWasConnected) { // controller dropped — don't leave keys stuck on
+      keys['ArrowUp'] = keys['ArrowDown'] = keys['ArrowLeft'] = keys['ArrowRight'] = false;
+      padWasConnected = false;
+      updateHUD();
+    }
+    return;
+  }
+  if (!padWasConnected) { padWasConnected = true; updateHUD(); }
+
+  // Movement — d-pad or left stick. Written into the same keys{} the keyboard
+  // and touch controls use, so the movement logic needs no changes.
+  const ax = gp.axes.length > 1 ? gp.axes : [0, 0];
+  keys['ArrowUp']    = padPressed(gp, PAD.up)    || ax[1] < -AXIS_DEAD;
+  keys['ArrowDown']  = padPressed(gp, PAD.down)  || ax[1] >  AXIS_DEAD;
+  keys['ArrowLeft']  = padPressed(gp, PAD.left)  || ax[0] < -AXIS_DEAD;
+  keys['ArrowRight'] = padPressed(gp, PAD.right) || ax[0] >  AXIS_DEAD;
+
+  // Bomb + start are edge-triggered (fire once per press) to match the keydown
+  // handler. Level-triggering would drop a bomb every frame the button is held.
+  const bombNow = padPressed(gp, PAD.bomb);
+  if (bombNow && !padPrevBomb && state === 'playing') placeBomb();
+  padPrevBomb = bombNow;
+
+  const startNow = padPressed(gp, PAD.start);
+  if (startNow && !padPrevStart && (state === 'title' || state === 'gameover')) startGame();
+  padPrevStart = startNow;
+}
+
+// === MOBILE TOUCH HANDLERS ===
+function touchKey(elId, keyName) {
+  const el = document.getElementById(elId);
+  const setKey = (val) => { keys[keyName] = val; el.classList.toggle('active', val); };
+  el.addEventListener('touchstart', e => { e.preventDefault(); setKey(true); }, {passive:false});
+  el.addEventListener('touchend', e => { e.preventDefault(); setKey(false); }, {passive:false});
+  el.addEventListener('touchcancel', () => { setKey(false); }, {passive:false});
+}
+touchKey('dpad-up', 'ArrowUp');
+touchKey('dpad-down', 'ArrowDown');
+touchKey('dpad-left', 'ArrowLeft');
+touchKey('dpad-right', 'ArrowRight');
+
+const bombBtn = document.getElementById('bomb-btn');
+bombBtn.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (state === 'playing') placeBomb();
+  bombBtn.classList.add('active');
+}, {passive:false});
+bombBtn.addEventListener('touchend', e => { e.preventDefault(); bombBtn.classList.remove('active'); }, {passive:false});
+bombBtn.addEventListener('touchcancel', () => { bombBtn.classList.remove('active'); });
+
+const startBtn = document.getElementById('start-btn');
+startBtn.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (state === 'title' || state === 'gameover') startGame();
+  startBtn.classList.add('active');
+}, {passive:false});
+startBtn.addEventListener('touchend', e => { e.preventDefault(); startBtn.classList.remove('active'); }, {passive:false});
+startBtn.addEventListener('touchcancel', () => { startBtn.classList.remove('active'); });
+
+// === GAME INIT ===
+map = generateMap();
+
+function startGame() {
+  state = 'playing';
+  document.getElementById('message').textContent = '';
+  map = generateMap();
+  bombs = []; explosions = []; enemies = []; powerups = [];
+  initPlayer();
+  spawnEnemies();
+  spawnPowerups();
+  updateHUD();
+}
+
+function nextRound() {
+  round++;
+  map = generateMap();
+  bombs = []; explosions = []; enemies = []; powerups = [];
+  player.x = 1; player.y = 1; player.px = TILE; player.py = TILE; player.travelDir = null;
+  spawnEnemies();
+  spawnPowerups();
+  updateHUD();
+}
+
+function playerDeath() {
+  lives--;
+  if (lives <= 0) { state = 'gameover'; document.getElementById('message').textContent = 'GAME OVER - Press ENTER'; }
+  else { player.x = 1; player.y = 1; player.px = TILE; player.py = TILE; player.travelDir = null; player.invincible = 90; }
+  updateHUD();
+}
+
+function updateHUD() {
+  document.getElementById('lives').textContent = lives;
+  document.getElementById('score').textContent = score;
+  document.getElementById('round').textContent = round;
+  const c = document.getElementById('controls');
+  if (c) {
+    c.innerHTML = padWasConnected
+      ? '<span style="color:#78f478">🎮 CONTROLLER CONNECTED</span> — D-PAD: Move | A/B: Bomb | R: Start'
+      : 'ARROWS: Move | SPACE: Place Bomb | ENTER: Restart';
+  }
+}
+
+// === UPDATE ===
+function update() {
+  animFrame++;
+  if (state !== 'playing') return;
+  if (!player) return;
+
+  // Player movement
+  if (player.alive) {
+    // --- determine desired direction from current key presses ---
+    let desiredDir = null;
+    if (keys['ArrowUp'] || keys['KeyW']) desiredDir = 'up';
+    else if (keys['ArrowDown'] || keys['KeyS']) desiredDir = 'down';
+    else if (keys['ArrowLeft'] || keys['KeyA']) desiredDir = 'left';
+    else if (keys['ArrowRight'] || keys['KeyD']) desiredDir = 'right';
+
+    if (desiredDir) {
+      // helper: try moving in a direction; returns {moved, forwardMoved}
+      function tryMove(dir) {
+        let ddx = 0, ddy = 0;
+        if (dir === 'up') ddy = -player.speed;
+        else if (dir === 'down') ddy = player.speed;
+        else if (dir === 'left') ddx = -player.speed;
+        else if (dir === 'right') ddx = player.speed;
+        const nx = player.px + ddx, ny = player.py + ddy;
+        let moved = false, forwardMoved = false;
+
+        if (ddx !== 0) {
+          // Moving horizontally — two-lane midpoint fix for Y snap
+          const nearLaneY = Math.floor(player.py / TILE) * TILE;
+          const farLaneY = nearLaneY + TILE;
+          let bestLaneY;
+          const distNearY = Math.abs(nearLaneY - player.py);
+          const distFarY = Math.abs(farLaneY - player.py);
+          if (distNearY <= distFarY) {
+            bestLaneY = tileAt(nx, nearLaneY) ? nearLaneY : (tileAt(nx, farLaneY) ? farLaneY : null);
+          } else {
+            bestLaneY = tileAt(nx, farLaneY) ? farLaneY : (tileAt(nx, nearLaneY) ? nearLaneY : null);
+          }
+          const snapY = bestLaneY !== null ? bestLaneY - player.py : 0;
+          const glide = Math.sign(snapY) * Math.min(Math.abs(snapY), 2);
+          const testY = player.py + glide;
+          if (tileAt(nx, testY)) { player.py = testY; player.px = nx; moved = true; forwardMoved = true; }
+          else if (tileAt(nx, player.py)) { player.px = nx; moved = true; forwardMoved = true; }
+          else if (bestLaneY !== null && Math.abs(snapY) <= 13 && tileAt(nx, bestLaneY)) { player.py = bestLaneY; player.px = nx; moved = true; forwardMoved = true; }
+          // Fallback: pure perpendicular glide at current X
+          if (!moved && bestLaneY !== null) {
+            const g2 = Math.sign(bestLaneY - player.py) * Math.min(Math.abs(bestLaneY - player.py), 2);
+            const tY = player.py + g2;
+            if (tileAt(player.px, tY)) { player.py = tY; moved = true; }
+          }
+        } else {
+          // Moving vertically — two-lane midpoint fix for X snap
+          const nearLaneX = Math.floor(player.px / TILE) * TILE;
+          const farLaneX = nearLaneX + TILE;
+          let bestLaneX;
+          const distNearX = Math.abs(nearLaneX - player.px);
+          const distFarX = Math.abs(farLaneX - player.px);
+          if (distNearX <= distFarX) {
+            bestLaneX = tileAt(nearLaneX, ny) ? nearLaneX : (tileAt(farLaneX, ny) ? farLaneX : null);
+          } else {
+            bestLaneX = tileAt(farLaneX, ny) ? farLaneX : (tileAt(nearLaneX, ny) ? nearLaneX : null);
+          }
+          const snapX = bestLaneX !== null ? bestLaneX - player.px : 0;
+          const glide = Math.sign(snapX) * Math.min(Math.abs(snapX), 2);
+          const testX = player.px + glide;
+          if (tileAt(testX, ny)) { player.px = testX; player.py = ny; moved = true; forwardMoved = true; }
+          else if (tileAt(player.px, ny)) { player.py = ny; moved = true; forwardMoved = true; }
+          else if (bestLaneX !== null && Math.abs(snapX) <= 13 && tileAt(bestLaneX, ny)) { player.px = bestLaneX; player.py = ny; moved = true; forwardMoved = true; }
+          // Fallback: pure perpendicular glide at current Y
+          if (!moved && bestLaneX !== null) {
+            const g2 = Math.sign(bestLaneX - player.px) * Math.min(Math.abs(bestLaneX - player.px), 2);
+            const tX = player.px + g2;
+            if (tileAt(tX, player.py)) { player.px = tX; moved = true; }
+          }
+        }
+        return { moved, forwardMoved };
+      }
+
+      // helper: glide toward the lane needed for a given desired direction (turn buffering alignment)
+      function glideTowardLaneFor(dir) {
+        if (dir === 'left' || dir === 'right') {
+          // horizontal desired move: align player.py to the correct lane
+          const nearLane = Math.floor(player.py / TILE) * TILE;
+          const farLane = nearLane + TILE;
+          const diffNear = nearLane - player.py;
+          const diffFar = farLane - player.py;
+          const target = Math.abs(diffNear) <= Math.abs(diffFar) ? nearLane : farLane;
+          const diff = target - player.py;
+          if (Math.abs(diff) <= 1) { player.py = target; return; }
+          const glide = Math.sign(diff) * Math.min(Math.abs(diff), 2);
+          const newY = player.py + glide;
+          if (tileAt(player.px, newY)) player.py = newY;
+        } else if (dir === 'up' || dir === 'down') {
+          // vertical desired move: align player.px to the correct lane
+          const nearLane = Math.floor(player.px / TILE) * TILE;
+          const farLane = nearLane + TILE;
+          const diffNear = nearLane - player.px;
+          const diffFar = farLane - player.px;
+          const target = Math.abs(diffNear) <= Math.abs(diffFar) ? nearLane : farLane;
+          const diff = target - player.px;
+          if (Math.abs(diff) <= 1) { player.px = target; return; }
+          const glide = Math.sign(diff) * Math.min(Math.abs(diff), 2);
+          const newX = player.px + glide;
+          if (tileAt(newX, player.py)) player.px = newX;
+        }
+      }
+
+      // STEP 2: try desired direction
+      const { moved, forwardMoved } = tryMove(desiredDir);
+
+      // STEP 3: if we moved, update direction
+      if (moved) {
+        player.dir = desiredDir;
+        // Only commit travelDir when continuing straight or starting fresh;
+        // when a perpendicular direction is pressed, keep the old travelDir
+        // so step 4 can keep the player flowing while the turn is pending.
+        if (!player.travelDir || player.travelDir === desiredDir) {
+          player.travelDir = desiredDir;
+        }
+      }
+      // STEP 4: turn buffering — keep going in travel direction while gliding toward desired lane
+      else if (player.travelDir && player.travelDir !== desiredDir) {
+        tryMove(player.travelDir);
+        glideTowardLaneFor(desiredDir);
+      }
+
+      player.x = (player.px + TILE/2) / TILE;
+      player.y = (player.py + TILE/2) / TILE;
+    }
+
+    // Powerup collection
+    powerups = powerups.filter(pu => {
+      const dist = Math.hypot(player.px - pu.c * TILE, player.py - pu.r * TILE);
+      if (dist < TILE) {
+        score += 50;
+        if (pu.type === 'speed') document.getElementById('speed-lvl').textContent = Math.min(getSpeedLevel() + 1, 5);
+        if (pu.type === 'bomb') document.getElementById('bomb-lvl').textContent = Math.min(getBombLevel() + 1, 5);
+        if (pu.type === 'range') document.getElementById('range-lvl').textContent = Math.min(getRangeLevel() + 1, 5);
+        if (pu.type === 'life') { lives++; }
+        updateHUD();
+        return false;
+      }
+      return true;
+    });
+
+    if (player.invincible > 0) player.invincible--;
+  }
+
+  // Bomb timers
+  for (const b of bombs) {
+    if (!b.exploded) {
+      b.timer--;
+      if (b.timer <= 0) explodeBomb(b);
+    }
+  }
+
+  // Explosion timers
+  explosions = explosions.filter(e => { e.timer--; return e.timer > 0; });
+
+  // Remove fully-exploded bombs (so their cells become bombable again)
+  bombs = bombs.filter(b => !b.exploded);
+
+  // Check player hit by explosion
+  if (player.alive && player.invincible <= 0) {
+    const pc = Math.round(player.x), pr = Math.round(player.y);
+    if (explosions.some(e => e.r === pr && e.c === pc)) playerDeath();
+  }
+
+  // Enemy AI
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    e.timer++;
+    const spd = e.speed * 0.8;
+
+    let dx = 0, dy = 0;
+    if (e.dir === 'up') dy = -spd;
+    else if (e.dir === 'down') dy = spd;
+    else if (e.dir === 'left') dx = -spd;
+    else if (e.dir === 'right') dx = spd;
+
+    const nx = e.px + dx, ny = e.py + dy;
+    if (tileAt(nx, ny)) {
+      e.px = nx; e.py = ny;
+    } else {
+      // Change direction
+      const opts = ['up','down','left','right'].filter(d => d !== e.dir);
+      e.dir = opts[Math.floor(Math.random() * opts.length)];
+    }
+
+    // Random direction change
+    if (e.timer > 30 + Math.random() * 60) { e.timer = 0; }
+    else if (e.timer > 20 && Math.random() < 0.03) { e.dir = ['up','down','left','right'][Math.floor(Math.random()*4)]; }
+
+    e.x = (e.px + TILE/2) / TILE;
+    e.y = (e.py + TILE/2) / TILE;
+
+    // Collision with player
+    if (player.alive && player.invincible <= 0) {
+      const dist = Math.hypot(player.px - e.px, player.py - e.py);
+      if (dist < TILE * 0.7) playerDeath();
+    }
+
+    // Collision with explosion
+    const ec = Math.round(e.x), er = Math.round(e.y);
+    if (explosions.some(ex => ex.r === er && ex.c === ec)) {
+      e.alive = false; score += 100; updateHUD();
+    }
+  }
+
+  // Check win condition
+  if (enemies.filter(e => e.alive).length === 0) { nextRound(); }
+}
+
+// === DRAWING ===
+function drawTile(r, c) {
+  const x = c * TILE, y = r * TILE;
+  if (r % 2 === 0 && c % 2 === 0) {
+    ctx.fillStyle = '#3c3c6e'; // dark blue floor grid intersection
+  } else {
+    ctx.fillStyle = '#2c2c5e'; // floor
+  }
+  ctx.fillRect(x, y, TILE, TILE);
+
+  if (map[r][c] === 2) {
+    // Hard wall - C64 style brick pattern
+    ctx.fillStyle = '#7c7cd0';
+    ctx.fillRect(x, y, TILE, TILE);
+    ctx.fillStyle = '#4f4fb0';
+    ctx.fillRect(x+2, y+2, TILE/2-3, TILE/2-3);
+    ctx.fillRect(x+TILE/2+1, y+TILE/2+1, TILE/2-3, TILE/2-3);
+    ctx.strokeStyle = '#1a1a4e';
+    ctx.strokeRect(x, y, TILE, TILE);
+  } else if (map[r][c] === 1) {
+    // Soft wall - C64 crate/wood style
+    ctx.fillStyle = '#bcb16c';
+    ctx.fillRect(x, y, TILE, TILE);
+    ctx.fillStyle = '#8c732a';
+    ctx.fillRect(x+3, y+3, TILE-6, TILE-6);
+    ctx.fillStyle = '#bcb16c';
+    ctx.fillRect(x+6, y+6, TILE-12, TILE-12);
+    ctx.strokeStyle = '#504040';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x+3, y+3, TILE-6, TILE-6);
+    ctx.lineWidth = 1;
+  }
+}
+
+function drawPlayer() {
+  if (!player || !player.alive) return;
+  const x = player.px, y = player.py;
+
+  // Blink when invincible
+  if (player.invincible > 0 && Math.floor(animFrame / 4) % 2 === 0) return;
+
+  // Body
+  ctx.fillStyle = C.white;
+  ctx.fillRect(x + 10, y + 8, 20, 24);
+  // Head
+  ctx.fillStyle = C.white;
+  ctx.beginPath();
+  ctx.arc(x + TILE/2, y + 10, 10, 0, Math.PI * 2);
+  ctx.fill();
+  // Eyes
+  ctx.fillStyle = C.black;
+  const ex = player.dir === 'left' ? -2 : player.dir === 'right' ? 2 : 0;
+  const ey = player.dir === 'up' ? -2 : player.dir === 'down' ? 2 : 0;
+  ctx.fillRect(x + 14 + ex, y + 8 + ey, 3, 3);
+  ctx.fillRect(x + 22 + ex, y + 8 + ey, 3, 3);
+  // Feet
+  ctx.fillStyle = C.blue;
+  const walk = Math.floor(animFrame / 6) % 2;
+  ctx.fillRect(x + 10, y + 30 + (walk ? -2 : 0), 8, 4);
+  ctx.fillRect(x + 22, y + 30 + (walk ? 0 : -2), 8, 4);
+}
+
+function drawBomb(b) {
+  const x = b.c * TILE, y = b.r * TILE;
+  const pulse = Math.sin(animFrame * 0.2) * 3;
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.arc(x + TILE/2 + 2, y + TILE/2 + 2, 10 + pulse * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Bomb body
+  const grad = ctx.createRadialGradient(x+18, y+16, 2, x+TILE/2, y+TILE/2, 14);
+  grad.addColorStop(0, '#bcbcbc');
+  grad.addColorStop(1, '#4f4fb0');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(x + TILE/2, y + TILE/2 + 2, 10 + pulse * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Fuse
+  ctx.strokeStyle = '#bcb16c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x + TILE/2, y + 6);
+  ctx.quadraticCurveTo(x + TILE/2 + 5, y, x + TILE/2 + 3, y - 4);
+  ctx.stroke();
+
+  // Spark
+  if (animFrame % 6 < 3) {
+    ctx.fillStyle = '#f47878';
+    ctx.fillRect(x + TILE/2 + 1, y - 6, 4, 4);
+  }
+
+  // Timer indicator
+  if (b.timer < 40) {
+    ctx.fillStyle = `rgba(244,120,120,${0.3 + Math.sin(animFrame * 0.5) * 0.3})`;
+    ctx.beginPath();
+    ctx.arc(x + TILE/2, y + TILE/2, 14, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawExplosion(e) {
+  const x = e.c * TILE, y = e.r * TILE;
+  const t = e.timer / 30;
+  const alpha = t * 0.8;
+
+  ctx.fillStyle = `rgba(244,120,120,${alpha})`;
+  ctx.fillRect(x + 4, y + 4, TILE - 8, TILE - 8);
+  ctx.fillStyle = `rgba(244,244,120,${alpha})`;
+  ctx.fillRect(x + 10, y + 10, TILE - 20, TILE - 20);
+  ctx.fillStyle = `rgba(255,255,255,${alpha * 0.7})`;
+  ctx.fillRect(x + 16, y + 16, TILE - 32, TILE - 32);
+}
+
+function drawEnemy(e) {
+  if (!e.alive) return;
+  const x = e.px, y = e.py;
+
+  // Body - ghostly C64 style
+  const bob = Math.sin(animFrame * 0.1 + e.x) * 2;
+  ctx.fillStyle = '#dca8b4';
+  ctx.beginPath();
+  ctx.arc(x + TILE/2, y + TILE/2 - 2 + bob, 14, Math.PI, 0);
+  ctx.fill();
+
+  // Wavy bottom
+  for (let i = 0; i < 4; i++) {
+    const wx = x + 6 + i * 8;
+    const wy = y + TILE/2 + 8 + bob + Math.sin(animFrame * 0.15 + i) * 3;
+    ctx.fillRect(wx, wy, 6, 6);
+  }
+
+  // Eyes
+  ctx.fillStyle = C.black;
+  ctx.fillRect(x + 12, y + TILE/2 - 4 + bob, 5, 6);
+  ctx.fillRect(x + 23, y + TILE/2 - 4 + bob, 5, 6);
+  ctx.fillStyle = C.white;
+  ctx.fillRect(x + 13, y + TILE/2 - 3 + bob, 3, 3);
+  ctx.fillRect(x + 24, y + TILE/2 - 3 + bob, 3, 3);
+
+  // Crown for variety
+  ctx.fillStyle = '#bcb16c';
+  ctx.fillRect(x + 14, y + TILE/2 - 16 + bob, 12, 5);
+  ctx.fillRect(x + 16, y + TILE/2 - 20 + bob, 3, 5);
+  ctx.fillRect(x + 21, y + TILE/2 - 20 + bob, 3, 5);
+}
+
+function drawPowerup(pu) {
+  const x = pu.c * TILE, y = pu.r * TILE;
+  const bob = Math.sin(animFrame * 0.08 + pu.c) * 3;
+  const glow = 0.4 + Math.sin(animFrame * 0.1) * 0.2;
+
+  // Glow
+  ctx.fillStyle = `rgba(244,244,120,${glow})`;
+  ctx.beginPath();
+  ctx.arc(x + TILE/2, y + TILE/2 + bob, 16, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Box
+  const colors = { speed: '#6cb4f0', bomb: '#bcb16c', range: '#78f478', life: '#f47878' };
+  ctx.fillStyle = colors[pu.type];
+  ctx.fillRect(x + 10, y + 10 + bob, 20, 20);
+
+  // Icon
+  ctx.fillStyle = C.white;
+  ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'center';
+  const icons = { speed: '>>', bomb: '+B', range: '+R', life: '+L' };
+  ctx.fillText(icons[pu.type], x + TILE/2, y + TILE/2 + 5 + bob);
+}
+
+function draw() {
+  // Clear
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Scanline effect
+  ctx.fillStyle = 'rgba(0,0,0,0.04)';
+  for (let y = 0; y < canvas.height; y += 2) {
+    ctx.fillRect(0, y, canvas.width, 1);
+  }
+
+  // Map
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (map[r][c] > 0) drawTile(r, c);
+    }
+  }
+
+  // Powerups
+  for (const pu of powerups) drawPowerup(pu);
+
+  // Bombs
+  for (const b of bombs) if (!b.exploded) drawBomb(b);
+
+  // Explosions
+  for (const e of explosions) drawExplosion(e);
+
+  // Enemies
+  for (const e of enemies) drawEnemy(e);
+
+  // Player
+  drawPlayer();
+
+  // Vignette (C64 CRT feel)
+  const vg = ctx.createRadialGradient(canvas.width/2, canvas.height/2, canvas.width * 0.3, canvas.width/2, canvas.height/2, canvas.width * 0.7);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.3)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Title/Game Over overlay
+  if (state === 'title') {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Branding
+    ctx.fillStyle = C.green;
+    ctx.font = 'bold 28px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('BOMBERMAN', canvas.width / 2, 30);
+    ctx.fillStyle = C.yellow;
+    ctx.font = '16px Courier New';
+    ctx.fillText('C64 EDITION', canvas.width / 2, 55);
+
+    // Controls section
+    ctx.fillStyle = '#aaaaaa';
+    ctx.font = 'bold 12px Courier New';
+    ctx.textAlign = 'left';
+    ctx.fillText('CONTROLS', 60, 85);
+    ctx.fillStyle = '#aaaaaa';
+    ctx.font = '12px Courier New';
+    ctx.fillText('KEYBOARD: ARROWS/WASD move  SPACE bomb  ENTER start', 60, 108);
+    ctx.fillText('TOUCH: on-screen D-pad  BOMB button  START button', 60, 130);
+    ctx.fillText('GAMEPAD: D-pad/stick move  A/B bomb  RIGHT SHOULDER start', 60, 152);
+
+    // Gamepad pairing reminder
+    ctx.fillStyle = C.yellow;
+    ctx.font = '12px Courier New';
+    ctx.fillText('GAMEPAD: hold B + ON to pair  (requires https://)', 60, 205);
+
+    // Power-up legend
+    const puColors = { speed: '#6cb4f0', bomb: '#bcb16c', range: '#78f478', life: '#f47878' };
+    const puIcons = { speed: '>>', bomb: '+B', range: '+R', life: '+L' };
+    const puDescs = [
+      { type: 'speed', text: 'SPEED — move faster (max 5)' },
+      { type: 'bomb',  text: 'BOMBS — carry one more bomb (max 5)' },
+      { type: 'range', text: 'RANGE — bigger blast radius (max 5)' },
+      { type: 'life',  text: 'LIFE — one extra life' },
+    ];
+    ctx.font = '12px Courier New';
+    puDescs.forEach((item, i) => {
+      const y = 250 + i * 28;
+      // Colored box
+      ctx.fillStyle = puColors[item.type];
+      ctx.fillRect(60, y - 14, 16, 16);
+      // Icon inside box
+      ctx.fillStyle = C.white;
+      ctx.font = 'bold 11px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillText(puIcons[item.type], 68, y - 1);
+      // Description text
+      ctx.textAlign = 'left';
+      ctx.font = '12px Courier New';
+      ctx.fillText(item.text, 90, y - 1);
+    });
+
+    // Blinking start prompt
+    ctx.fillStyle = C.white;
+    ctx.font = '14px Courier New';
+    ctx.textAlign = 'center';
+    const blink = Math.floor(animFrame / 30) % 2;
+    if (blink) ctx.fillText('PRESS ENTER / START', canvas.width / 2, 490);
+  }
+
+  if (state === 'gameover') {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = C.red;
+    ctx.font = 'bold 36px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER', canvas.width/2, canvas.height/2);
+  }
+}
+
+// === GAME LOOP ===
+function loop() {
+  pollGamepad();
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
