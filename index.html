@@ -598,7 +598,7 @@ function update() {
 
   // Check player hit by explosion
   if (player.alive && player.invincible <= 0) {
-    const pc = Math.round(player.x), pr = Math.round(player.y);
+    const pc = Math.floor(player.x), pr = Math.floor(player.y);
     if (explosions.some(e => e.r === pr && e.c === pc)) playerDeath();
   }
 
@@ -637,7 +637,7 @@ function update() {
     }
 
     // Collision with explosion
-    const ec = Math.round(e.x), er = Math.round(e.y);
+    const ec = Math.floor(e.x), er = Math.floor(e.y);
     if (explosions.some(ex => ex.r === er && ex.c === ec)) {
       e.alive = false; score += 100; updateHUD();
     }
